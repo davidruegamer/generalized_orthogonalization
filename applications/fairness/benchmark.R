@@ -113,7 +113,8 @@ benchmark_fun <- function(
     m <- results_fair_methods[[j]]
     
     if(inherits(m, "try-error"))
-      return(data.frame(model = models[j], dataset = dataset, 
+      return(data.frame(method = models[j], dataset = dataset, 
+                        rowname = c(NA, NA),
                         name = c("Estimate", "Pr(>|z|)"),
                         value = c(NA, NA)))
     
@@ -136,7 +137,7 @@ benchmark_fun <- function(
   ortho <- cbind(method = "ortho", dataset = dataset, 
                  extract_info_model(result_ortho$eval_mod))
   
-  return(do.call("rbind",c(stats_fair, list(ortho))))
+  return(c(stats_fair, list(ortho)))
   
 }
 
@@ -145,3 +146,33 @@ benchmark_fun <- function(
 res <- mclapply(data_info$names, function(name) benchmark_fun(name), mc.cores = 4)
 
 saveRDS(res, file = "fairness_benchmark.RDS")
+
+res <- do.call("rbind", unlist(res, recursive = F))
+
+library(ggplot2)
+library(dplyr)
+
+my_palette <- c("#E69F00", "#56B4E9", "#009E73", 
+                "#0072B2", "#D55E00", "#CC79A7")
+
+ggplot(res #%>% 
+         # mutate(
+         #   method = factor(method, levels = unique(method), 
+         #                 labels = c("",
+         #                            "")),
+           # name = factor(name, levels = c("coef", "pval"),
+           #               labels = c("effect", "p-value")),
+           # type = factor(type, levels = unique(type),
+           #               labels = c(expression(C^l), expression(C^h))
+           # )
+         #) %>% filter(abs(value) <= 10) %>% filter(load == ll),  
+       , aes(x = dataset, y=value, colour = method)) +
+  geom_boxplot() +
+  facet_grid(name ~ ., scales="free") + 
+  theme_bw() + 
+  scale_colour_manual(values = my_palette) + 
+  theme(
+    legend.title = element_blank(),
+    text = element_text(size = 14),
+    legend.position="bottom"
+  )
