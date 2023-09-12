@@ -44,9 +44,22 @@ pwl_gen <- function(n = 11, min_x = -4, max_x = 4, max_incr = 0.5, seed = 32){
 functions <- list(
   relu = function(x) return(pmax(0, x)),
   leakyrelu = function(x) return(x * (x > 0) + 0.1 * (x < 0)),
-  threesteps = function(x) return(x * (x > 0.5) + 0 * (x <= 0.5 & x > -0.5) - 0.5 * (x <= -0.5)),
-  pwl = function(x) pwl_gen()(x)
+  threesteps = function(x) return(x * (x > 0.5) + 0 * (x <= 0.5 & x > -0.5) - 0.5 * (x <= -0.5))
 )
+
+pieces <- c(3,5,7,9,15,21)
+
+pwfs <- lapply(pieces, function(nn) list(function(x) pwl_gen(n = nn, seed = 1)(x),
+                                               function(x) pwl_gen(n = nn, seed = 2)(x),
+                                               function(x) pwl_gen(n = nn, seed = 3)(x),
+                                               function(x) pwl_gen(n = nn, seed = 4)(x),
+                                               function(x) pwl_gen(n = nn, seed = 5)(x))
+)
+
+pwfs <- unlist(pwfs, recursive = F)
+names(pwfs) <- paste0("pw_", rep(pieces, each = 5), "_nr", rep(1:5))
+
+functions <- c(functions, pwfs)
 
 true_coef <- rnorm(max(settings$p), sd = sd_sample) 
 hidden_coef <- rnorm(max(settings$q))
