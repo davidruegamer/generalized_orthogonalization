@@ -132,7 +132,7 @@ benchmark_fun <- function(
                                  cbind(preds, sens), 
                                  sens, 
                                  family = family,
-                                 maxdiff = 1e-6
+                                 maxdiff = 1e-7
                                  )
   ortho <- cbind(method = "ortho", dataset = dataset, 
                  extract_info_model(result_ortho$eval_mod))
@@ -155,11 +155,17 @@ library(dplyr)
 my_palette <- c("#E69F00", "#56B4E9", "#009E73", 
                 "#0072B2", "#D55E00", "#CC79A7")
 
-ggplot(res #%>% 
-         # mutate(
-         #   method = factor(method, levels = unique(method), 
-         #                 labels = c("",
-         #                            "")),
+ggplot(res %>% filter(rowname != "(Intercept)") %>% 
+         mutate(
+           method = factor(method, levels = unique(method)[c(5,1:4)],
+                         labels = c("Komiyama1",
+                                    "Komiyama2",
+                                    "Berk",
+                                    "Zafar",
+                                    "Ours")),
+           name = factor(name, levels = unique(name),
+                         labels = c("effect", "p-value"))
+           )
            # name = factor(name, levels = c("coef", "pval"),
            #               labels = c("effect", "p-value")),
            # type = factor(type, levels = unique(type),
@@ -167,8 +173,8 @@ ggplot(res #%>%
            # )
          #) %>% filter(abs(value) <= 10) %>% filter(load == ll),  
        , aes(x = dataset, y=value, colour = method)) +
-  geom_boxplot() +
-  facet_grid(name ~ ., scales="free") + 
+  geom_boxplot(position = position_dodge(preserve = "single")) +
+  facet_wrap(~ name, scales="free") + 
   theme_bw() + 
   scale_colour_manual(values = my_palette) + 
   theme(
@@ -176,3 +182,5 @@ ggplot(res #%>%
     text = element_text(size = 14),
     legend.position="bottom"
   )
+
+ggsave(file = "results_fairness_benchmark.pdf", height = 3, width = 10)

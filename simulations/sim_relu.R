@@ -4,11 +4,6 @@ sd_sample = 1
 settings <- data.frame(p = 100, n = 1000, q = 5)
 sample_fun = function(n, m) rnorm(n, m, sd = 1)
 
-# Define the step function
-step_function <- function(x) {
-  seq(-1, 1, l = 10)[as.numeric(cut(x, breaks = c(-Inf, seq(-4, 4, 1), Inf)))]
-}
-
 pwl_gen <- function(n = 11, min_x = -4, max_x = 4, max_incr = 0.5, seed = 32){
   
   set.seed(seed)
@@ -50,7 +45,6 @@ functions <- list(
   relu = function(x) return(pmax(0, x)),
   leakyrelu = function(x) return(x * (x > 0) + 0.1 * (x < 0)),
   threesteps = function(x) return(x * (x > 0.5) + 0 * (x <= 0.5 & x > -0.5) - 0.5 * (x <= -0.5)),
-  tensteps = function(x) return(step_function(x)),
   pwl = function(x) pwl_gen()(x)
 )
 
