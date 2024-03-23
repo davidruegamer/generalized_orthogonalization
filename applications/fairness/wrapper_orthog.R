@@ -52,7 +52,8 @@ wrapper_orthog <- function(
   }
   # browser()
   evaluation_mod <- modfun(yhat, sensitive)
+  rfres <- rf_check(y = yhat, sens = sensitive)
   
-  return(evaluation_mod)
+  return(list(evaluation_mod, rfres))
 
 }

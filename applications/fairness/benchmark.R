@@ -3,10 +3,10 @@ library(fairml)
 library(tidyr)
 library(dplyr)
 library(tibble)
+library(ranger)
 
 # wrapper for orthog
 source("../../simulations/common/functions.R")
-source("wrapper_orthog.R")
 
 # wrapper for fairml
 frrm_sp_komiyama <- function(...) frrm(..., definition = "sp-komiyama")
@@ -123,9 +123,9 @@ benchmark_fun <- function(
       predict(m, preds, sens)
     
     eval_mod <- glmgen(yhat, sens, fam = family, intercept = T)
-    
+  
     return(cbind(method = models[j], dataset = dataset, 
-                 extract_info_model(eval_mod)))
+                 rbind(extract_info_model(eval_mod), rf_check(yhat, sens))))
     
   })
   
@@ -134,7 +134,8 @@ benchmark_fun <- function(
                                  sens, 
                                  family = family)
   ortho <- cbind(method = "ortho", dataset = dataset, 
-                 extract_info_model(result_ortho))
+                 rbind(extract_info_model(result_ortho[[1]]),
+                       result_ortho[[2]]))
   
   return(do.call("rbind", c(stats_fair, list(ortho))))
   

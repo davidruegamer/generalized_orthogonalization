@@ -87,7 +87,26 @@ glmgen <- function(y, mat_or_df, fam, # ofs = NULL,
     stop("Wrong format.")
     
   }
+}
+
+rf_check <- function(y, sens)
+{
   
+  rf_data <- as.data.frame(cbind(yhat = y, model.matrix(~ ., data = sens)))
+  names(rf_data)[1] <- "yhat"
+  org_names <- names(rf_data)
+  names(rf_data) <- gsub("-", "_", names(rf_data))
+  names(rf_data) <- gsub("\\(|\\)", "", names(rf_data))
+  mod <- ranger(yhat ~ ., data = rf_data, num.trees = 500, importance = "permutation")
+  eval_rf <- importance_pvalues(mod, formula = yhat ~ ., data = rf_data, method = "altmann")
+  # replace new with old names
+  rownames(eval_rf) <- org_names[-1]
+  eval_rf <- as.data.frame(eval_rf)
+  eval_rf <- tibble::rownames_to_column(eval_rf, var = "rowname")
+  colnames(eval_rf)[2:3] <- c("Importance", "Importance_pval")
+  eval_rf <- tidyr::pivot_longer(eval_rf, Importance:Importance_pval)
+  
+  return(eval_rf)
   
 }
 
@@ -344,6 +363,63 @@ sim_function <- function(sample_fun, h, g, fam,
   
 }
 
+wrapper_orthog <- function(
+    response, # y
+    predictors, # Z
+    sensitive, # X
+    unfairness = NULL, # not used
+    family,
+    maxdiff = 1e-7,
+    correct_method = c("lagrangian", "project")
+)
+{
+  
+  correct_method <- match.arg(correct_method)
+
+  modfun <- switch(family,
+                   gaussian = function(y,x) glmgen(y, x, family, TRUE, FALSE),
+                   binomial = function(y,x) glmgen(y, x, family, TRUE),
+                   poisson = function(y,x) glmgen(y, x, family, TRUE),
+                   multinomial = function(y, x) nnet::multinom(y ~ -1 + x))
+  
+  predfun <- switch(family,
+                    gaussian = predict,
+                    binomial = function(mod) predict(mod, type = "response"),
+                    poisson = function(mod) predict(mod, type = "response"),
+                    multinomial = predict)
+  
+  if(family == "gaussian"){ 
+    
+    yhat <- predict(modfun(response, orthog(to_orthog = predictors, orthog_with = sensitive)))
+    
+  }else{
+    
+    thisZ <- model.matrix(~ ., data = predictors)
+    thisX <- model.matrix(~ ., data = sensitive)
+    y <- if(family == "binomial") as.numeric(response)-1 else response
+    if(correct_method == "project"){
+      yhat <- correct_Z(thisX, thisZ, y, family, what = "pred") 
+    }else{
+      yhat <- lagrangianConstr(thisX, thisZ, y, family, what = "pred")
+    }
+    
+    if(family=="binomial"){ 
+      cat("ACC w/o corr.: ", Metrics::accuracy(y, predfun(modfun(response, thisZ))>0.5), "\n",
+          "ACC w/ corr.: ", Metrics::accuracy(y, yhat>0.5), "\n")
+    }else{
+      cat("MSE w/o corr.: ", Metrics::rmse(y, predfun(modfun(response, thisZ))), "\n",
+          "MSE w/ corr.: ", Metrics::rmse(y, yhat))
+    }
+    
+    
+  }
+  browser()
+  evaluation_mod <- modfun(yhat, sensitive)
+  rfres <- rf_check(y = yhat, sens = sensitive)
+  
+  return(list(evaluation_mod, rfres))
+  
+}
 
 # Function to plot results
 plot_function <- function(res)
