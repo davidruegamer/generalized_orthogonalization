@@ -5,7 +5,9 @@ res <- sim_function(
   h = plogis,
   g = qlogis,
   fam = binomial(), 
-  sd_sample = 0.1
+  sd_sample = 0.5,
+  nrcores = 1,
+  which_corr = "Lagrangian"
 )
 
 saveRDS(res, file="results/binom.RDS")

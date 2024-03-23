@@ -1,3 +1,5 @@
+library(dplyr)
+
 ### Function computing the orthogonal projection
 orthog <- function(to_orthog, orthog_with)
 {
@@ -21,28 +23,46 @@ orthog <- function(to_orthog, orthog_with)
 ### get GLM weights^(1/2)
 get_sqrW <- function(mod) sqrt(mod$weights)
 
+### get GLM derivative
+get_derivGLM <- function(mod){
+  
+  if(mod$family$family=="poisson")
+    return(1/mod$fitted.values)
+  if(mod$family$family=="binomial")
+    return(1/(mod$fitted.values*(1-mod$fitted.values)))
+  
+}
+
 ### apply weight augmentation
-wAug <- function(X, W) t(t(X) * W)
+wAug <- function(X, W) sweep(X, 1, W, "*")
 
 ### formula handling
-form_from_df <- function(mat, int, outc = "y")
+form_from_df <- function(mat, int, ofsf = "", outc = "y")
 {
   as.formula(paste0(outc, " ~ ", int, 
                     paste(colnames(mat), 
-                          collapse = " + "))
+                          collapse = " + "), ofsf)
   )
 }
 
+### helper functions
+make_form <- function(respname, inds)
+  as.formula(paste0(respname, " ~ ",  
+                    paste(paste0("V", inds), collapse = " + "))
+  )
+
 ### glm generic
-glmgen <- function(y, mat_or_df, fam, intercept, g = TRUE)
+glmgen <- function(y, mat_or_df, fam, # ofs = NULL, 
+                   intercept = TRUE, g = TRUE)
 {
   
   fun <- if(g) glm else function(..., fam) lm(...)
   
   if(is.data.frame(mat_or_df)){
     
+    # ofsf <- if(!is.null(ofs)) "+ ofs" else ""
     int <- if(intercept) "1 + " else "-1 + "
-    form <- form_from_df(mat_or_df, int)
+    form <- form_from_df(mat_or_df, int) #, ofsf)
     
     fun(form, family = fam, data = cbind(y = y, mat_or_df))
     
@@ -50,11 +70,15 @@ glmgen <- function(y, mat_or_df, fam, intercept, g = TRUE)
     
     if(intercept & !sum(mat_or_df[,1]==1)==nrow(mat_or_df)){ 
       
-      fun(y ~ 1 + mat_or_df, family = fam) 
+      # if(!is.null(ofs))
+        # fun(y ~ 1 + mat_or_df + offset(ofs), family = fam) else
+          fun(y ~ 1 + mat_or_df, family = fam)
       
     }else{
         
-      fun(y ~ -1 + mat_or_df, family = fam)
+      # if(!is.null(ofs))
+        # fun(y ~ -1 + mat_or_df + offset(ofs), family = fam) else
+          fun(y ~ -1 + mat_or_df, family = fam)
       
     }
     
@@ -67,61 +91,143 @@ glmgen <- function(y, mat_or_df, fam, intercept, g = TRUE)
   
 }
 
-### Function implementing Algorithm 1
-correct_Z <- function(thisX, thisZ, y, fam, maxdiff = 1e-7, verbose = FALSE, 
-                      printevery = 10, lr = function(iter) 1, maxiter = 1000,
-                      return_hist = FALSE, with_intercept = NULL, scalefun = scale,
-                      with_intercept_x = TRUE, with_intercept_z = TRUE)
-{
+fisher_scoring_glm_corr <- function(Q, Z, y, distribution = "binomial", 
+                                    max_iter = 10000, conv_threshold = 1e-3,
+                                    return_what = c("gamma", "Z", "pred"),
+                                    lr = 0.5, fac_improvem = 100, onlyimprov = TRUE,
+                                    gamma_start = rep(0, ncol(Z))) {
+  gamma <- gamma_start
+  gamma_incr_old <- rep(100, ncol(Z))
+  return_what <- match.arg(return_what)
+  # gamma[1] <- if(distribution == "binomial") qlogis(mean(y)) else log(mean(y))
   
-  dontstop <- TRUE
-  iter <- 0
-  if(!verbose) printevery <- Inf
-  if(!is.null(with_intercept)){
-    with_intercept_x <- with_intercept
-    with_intercept_z <- with_intercept
-  }
-  beta <- rep(0, ncol(thisX) + with_intercept_x)
-  if(return_hist) hist <- c()
-  
-  while(TRUE){
+  for (i in 1:max_iter) {
     
-    prediction_model <- glmgen(y, thisZ, fam, with_intercept_z) 
-    yhat <- predict(prediction_model, type = "response")
-    eval_model <- suppressWarnings(glmgen(yhat, thisX, fam, with_intercept_x))
-
-    ### extract important terms
-    Ups_sqrt <- get_sqrW(eval_model)
-    Psi_sqrt <- get_sqrW(prediction_model)
-    Xtilde <- wAug(model.matrix(eval_model)[,-with_intercept_x], Ups_sqrt)
-    Ztilde <- wAug(model.matrix(prediction_model)[,-with_intercept_z], Psi_sqrt)
+    eta <- Z %*% gamma
+    eta <- eta - Q %*% crossprod(Q, eta)
     
-    ### compute Z^c
-    Zc <- scalefun(orthog(Ztilde, Xtilde))
-    
-    ### Check convergence
-    thiscrit <- crossprod(beta - coef(eval_model))
-    if(return_hist) hist <- c(hist, thiscrit)
-    if(iter%%printevery==0 & printevery!=Inf) cat("Iter: ", iter, "; Max difference:", thiscrit, "\n")
-    iter <- iter + 1
-    beta <- coef(eval_model)
-    
-    if(thiscrit < maxdiff){ 
-      if(return_hist) attr(Zc, "hist") <- hist
-      return(Zc) 
-    }else if(thiscrit > 10e10){
-      stop("Convergence failed with no solution.")
-    }else if(iter == maxiter){
-      warning("Not converged.")
-      if(return_hist) attr(Zc, "hist") <- hist
-      return(Zc)
-    }else{
-      thisZ <- lr(iter)*Zc + (1-lr(iter))*model.matrix(prediction_model)[,-with_intercept_z]
+    if (distribution == "binomial") {
+      mu <- exp(eta) / (1 + exp(eta))
+      g_deriv <- dlogis(eta)
+      V_mu <- mu * (1-mu)
+      h <- plogis
+    } else if (distribution == "poisson") {
+      mu <- exp(eta)
+      g_deriv <- 1/mu
+      V_mu <- mu
+      h <- exp
+    } else {
+      stop("Unsupported distribution")
     }
     
+    W <- 1/(g_deriv^2 * V_mu)
+    # W <- W/min(W)
+    G_Z <- g_deriv
+    
+    Zcurrent <- Z #cbind(1, wAug(PXbot, (1/W)*(1/G_Z))%*%wAug(Z[,-1], G_Z*W))
+
+    r <- eta + ((y - mu) - Q %*% crossprod(Q, (y - mu))) * G_Z
+    gamma_new <- coef(lm(r ~ -1 + Zcurrent, weights = W[,1]))
+    gamma_new[is.na(gamma_new)] <- 0
+
+    gamma_incr <- gamma - gamma_new
+    
+    if (max(abs(gamma_incr)) < conv_threshold | 
+        max(abs(gamma_incr - gamma_incr_old)) < conv_threshold/fac_improvem
+        ) {
+      break
+    }
+    cat("Iteration: ", i, " -- ", max(abs(gamma_incr)), "\n")
+    if(onlyimprov & max(abs(gamma_incr)) - max(abs(gamma_incr_old)) > 0)
+    {
+      if(return_what=="gamma")
+        return(gamma)
+      if(return_what=="Z")
+        return(Zcurrent)
+      return(h(Zcurrent%*%gamma))
+    }
+    gamma <- lr * gamma_new + (1-lr) * gamma
+    gamma_incr_old <- gamma_incr
+    if(i == max_iter)
+      warning("GLM not converged")
   }
   
+  if(return_what=="gamma")
+    return(gamma)
+  if(return_what=="Z")
+    return(Zcurrent)
+  return(h(Zcurrent%*%gamma))
 }
+
+
+### Function implementing Algorithm 1
+correct_Z <- function(thisX, thisZ, y, fam, what = "Z", ...)
+{
+  
+
+  if(class(fam)=="family")
+    fam <- fam$family
+  
+  Q <- qr.Q(qr(thisX))
+  # PXbot <- diag(rep(1, nrow(thisX))) - tcrossprod(Q)
+  
+  ### Compute Z^c
+  fisher_scoring_glm_corr(Q, thisZ, y, distribution = fam, 
+                          return_what = what, ...)
+  
+}
+
+lagrangianConstr <- function(thisX, thisZ, y, fam, what = "gamma", 
+                             startval_lambda = 1, ...)
+{
+  
+  if(class(fam)=="family")
+    fam <- fam$family
+  
+  centeredX <- scale(thisX, scale=F)
+  
+  if (fam == "binomial") {
+    b <- function(theta) log(1 + exp(theta))
+    theta <- function(mu) log(mu / (1-mu))
+    mu <- function(gamma) exp(thisZ%*%gamma) / (1 + exp(thisZ%*%gamma))
+    derivmu <- function(gamma) mu(gamma) * (1-mu(gamma))
+  } else if (fam == "poisson") {
+    b <- function(theta) exp(theta)
+    theta <- function(mu) log(mu)
+    mu <- function(gamma) exp(thisZ%*%gamma)
+    derivmu <- function(gamma) mu(gamma) 
+  } else {
+    stop("Unsupported distribution")
+  }
+  loglik <- function(gamma) sum(y*theta(mu(gamma)) - b(theta(mu(gamma))))
+  score <- function(gamma) crossprod(thisZ, (y-mu(gamma)))
+  inf <- function(gamma) c(crossprod(t(centeredX)%*%mu(gamma)))
+  deriv_inf <- function(gamma) 2*t(crossprod((centeredX*sqrt(derivmu(gamma)[,1])),
+                                             thisZ*sqrt(derivmu(gamma)[,1]))
+                                   )%*%(t(centeredX)%*%mu(gamma))
+  damp_term <- function(gamma) inf(gamma)^2 / 2
+  obj <- function(params) -loglik(params[-1]) + damp_term(params[-1]) + 
+    exp(params[1])*inf(params[-1])
+  obj_g <- function(params) c(
+    exp(params[1])*inf(params[-1]),
+    - score(params[-1]) +
+      params[1]*deriv_inf(params[-1])+
+      deriv_inf(params[-1])*inf(params[-1])
+  )
+  opt <- optim(c(startval_lambda, rep(0,ncol(thisZ))), 
+               obj, control = list(maxit = 10000), 
+               gr = obj_g,
+               method = "BFGS"#, 
+               # lower = c(0, rep(-100, ncol(thisZ)))
+               )
+  if(what == "gamma") return(opt$par[-1])
+  if(what == "pred") return(mu(opt$par[-1]))
+  if(what == "lambda") return(opt$par[1])
+  if(what == "params") return(opt$par)
+  return(opt)
+  
+}
+
 
 # Function for simulation
 sim_function <- function(sample_fun, h, g, fam,
@@ -130,7 +236,9 @@ sim_function <- function(sample_fun, h, g, fam,
                          p_vals = c(2, 5, 10),
                          n_vals = c(200, 1000, 5000, 10000),
                          rep_vals = 1:10,
-                         load_fac_X_on_Z = c(0, 1 ,2)
+                         load_fac_X_on_Z = c(0, 1 ,2),
+                         nrcores = 4,
+                         which_corr = c("iterProj", "Lagrangian")
                          )
 {
   
@@ -167,6 +275,8 @@ sim_function <- function(sample_fun, h, g, fam,
     X <- Xfull_wo[1:this_n,1:this_p] + load * Zfull[1:this_n,1:this_p]
     Z <- Zfull[1:this_n,]
     
+    X <- scale(X, scale = FALSE)
+    
     ### create response
     true_add_pred <- Z[,1:this_q,drop=F]%*%true_coef[1:this_q] + 
       X[,1:this_p,drop=F]%*%hidden_coef[1:this_p]
@@ -180,8 +290,8 @@ sim_function <- function(sample_fun, h, g, fam,
                             family = fam)
     
     ### get predicted values as scores and probabilities
-    yhat_score <- predict(prediction_model, type = "link")
-    yhat_prob <- predict(prediction_model, type = "response")
+    yhat_score <- matrix(predict(prediction_model, type = "link"))
+    yhat_prob <- matrix(predict(prediction_model, type = "response"))
     
     ### define and fit evaluation models
     linear_proj_model <- lm(make_form("yhat", 1:this_p), 
@@ -196,13 +306,21 @@ sim_function <- function(sample_fun, h, g, fam,
     uncorr_nl_nl <- summary(nonlinear_proj_model)$coefficients[2:(this_p+1),c(1,4)] 
     
     ### correct model
+    # browser()
     yhatc_score <- orthog(to_orthog = yhat_score, orthog_with = X)
-    Zc_prob <- correct_Z(X, Z, resp, fam, return_hist = T, with_intercept = F)
-    yhatc_prob <- predict(glm(make_form("y", 1:this_q),
-                              data = cbind(y = resp, 
-                                           as.data.frame(Zc_prob)), 
-                              family = fam))
-    conv_hist <- attr(Zc_prob, "hist")
+    if(which_corr == "iterProj"){
+      yhatc_prob <- correct_Z(X, Z, resp, fam, what = "pred")
+    }else if(which_corr == "Lagrangian"){
+      yhatc_prob <- lagrangianConstr(X, Z, resp, fam, what = "pred")
+    }else{
+      stop("Not implemented.")
+    }
+    
+    # colnames(Zc_prob) <- paste0("V", 1:ncol(Zc_prob))
+    # yhatc_prob <- predict(glm(make_form("y", 1:this_q),
+    #                           data = cbind(y = resp, 
+    #                                        as.data.frame(Zc_prob)), 
+    #                           family = fam))
     
     ### check again using evaluation model
     linear_proj_model <- lm(make_form("yhat", 1:this_p), 
@@ -211,7 +329,7 @@ sim_function <- function(sample_fun, h, g, fam,
     corr_nl_l <- summary(linear_proj_model)$coefficients[2:(this_p+1),c(1,4)]
 
     nonlinear_proj_model <- glm(make_form("yhat", 1:this_p),
-                                data = cbind(yhat = h(yhatc_prob),
+                                data = cbind(yhat = (yhatc_prob),
                                              as.data.frame(X)),
                                 family = fam)
     corr_nl_nl <- summary(nonlinear_proj_model)$coefficients[2:(this_p+1),c(1,4)]
@@ -220,12 +338,12 @@ sim_function <- function(sample_fun, h, g, fam,
                           cbind(uncorr_nl_nl, type = "NL/NL", corr = 0),
                           cbind(corr_nl_l, type = "NL/L", corr = 1),
                           cbind(corr_nl_nl, type = "NL/NL", corr = 1)),
-                setting=settings[set,],
-                hist = conv_hist))
+                setting=settings[set,]))
            
-  }, mc.cores = 8)
+  }, mc.cores = nrcores)
   
 }
+
 
 # Function to plot results
 plot_function <- function(res)
@@ -264,7 +382,8 @@ plot_function <- function(res)
            ) %>% filter(abs(value) <= 10) %>% filter(load == ll),  
          aes(x = type, y=value, colour=corr)) +
     geom_boxplot() +
-    facet_grid(name ~ n*q, scales="free", labeller = labeller(n = label_both, q = label_both)) + 
+    facet_grid(name ~ n*q, scales="free", 
+               labeller = labeller(n = label_both, q = label_both)) + 
     theme_bw() + 
     scale_colour_manual(values = my_palette) + 
     theme(
@@ -276,9 +395,3 @@ plot_function <- function(res)
   )
   
 }
-
-### helper functions
-make_form <- function(respname, inds)
-  as.formula(paste0(respname, " ~ ",  
-                    paste(paste0("V", inds), collapse = " + "))
-  )

@@ -4,9 +4,12 @@ wrapper_orthog <- function(
     sensitive, # X
     unfairness = NULL, # not used
     family,
-    maxdiff = 1e-7
+    maxdiff = 1e-7,
+    correct_method = c("lagrangian", "project")
 )
 {
+  
+  correct_method <- match.arg(correct_method)
 
   source("../../simulations/common/functions.R")
   
@@ -22,19 +25,34 @@ wrapper_orthog <- function(
                     poisson = function(mod) predict(mod, type = "response"),
                     multinomial = predict)
   
-  Zc <- if(family == "gaussian") orthog(to_orthog = predictors, 
-                                        orthog_with = sensitive) else
-                                          correct_Z(sensitive, predictors, 
-                                                    maxdiff = maxdiff, 
-                                                    response, family, verbose = T,
-                                                    with_intercept = TRUE) 
-  
-  prediction_mod <- modfun(response, Zc)
-  yhat <- predfun(prediction_mod)
+  if(family == "gaussian"){ 
+    
+    yhat <- predict(modfun(response, orthog(to_orthog = predictors, orthog_with = sensitive)))
+    
+  }else{
+    
+    thisZ <- model.matrix(~ ., data = predictors)
+    thisX <- model.matrix(~ ., data = sensitive)
+    y <- if(family == "binomial") as.numeric(response)-1 else response
+    if(correct_method == "project"){
+      yhat <- correct_Z(thisX, thisZ, y, family, what = "pred") 
+    }else{
+      yhat <- lagrangianConstr(thisX, thisZ, y, family, what = "pred")
+    }
+    
+    if(family=="binomial"){ 
+      cat("ACC w/o corr.: ", Metrics::accuracy(y, predfun(modfun(response, thisZ))>0.5), "\n",
+          "ACC w/ corr.: ", Metrics::accuracy(y, yhat>0.5), "\n")
+    }else{
+      cat("MSE w/o corr.: ", Metrics::rmse(y, predfun(modfun(response, thisZ))), "\n",
+          "MSE w/ corr.: ", Metrics::rmse(y, yhat))
+    }
+    
+    
+  }
+  # browser()
   evaluation_mod <- modfun(yhat, sensitive)
   
-  return(list(pred_mod = prediction_mod,
-              yhat = yhat,
-              eval_mod = evaluation_mod))
+  return(evaluation_mod)
 
 }

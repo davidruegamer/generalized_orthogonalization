@@ -28,8 +28,6 @@ colorize <- function(images, labels, test = FALSE) {
   
   for (i in 1:dim(images)[1]) {
     if (labels[i] == 0 & test==FALSE) {
-      # Red channel for 0s
-      train_red[i] <- 1
       colored_images[i, , , 1] <- images[i, , ]
       colored_images[i, , , 2] <- 0
       colored_images[i, , , 3] <- 0
@@ -43,37 +41,51 @@ colorize <- function(images, labels, test = FALSE) {
   return(colored_images / 255) # Normalize
 }
 
+set.seed(1)
+
+train_images_colored <- colorize(train_images, train_labels) #, this_fac)
+test_images_colored <- colorize(test_images, test_labels, test = TRUE) #, this_fac)
+
+# 3. Creating a binary outcome (0 vs all)
+
+train_labels_binary <- as.integer(train_labels == 0)
+train_red <- (train_labels_binary==0)*1
+test_labels_binary <- as.integer(test_labels == 0)
+
+
+solve_positive_constr_linreg <- function(y,X){
+  
+  library(quadprog)
+  D <- crossprod(X)
+  d <- crossprod(X, y)
+  A <- t(X)
+  b0 <- rep(0, nrow(X))
+  # Solve using quadprog's solve.QP
+  solution <- solve.QP(Dmat = D, dvec = as.vector(d), Amat = A, bvec = b0, meq = 0)
+  return(solution$solution)
+  
+}
+
 reps <- 10
 max_epochs <- 100
-batch_size <- 256
+batch_size <- 128
 val_split <- 0.2
-pat <- 5
+pat <- 25
 
-res <- mclapply(1:reps, function(set){
-  
-  set.seed(set)
-  
-  library(keras)
-  library(tensorflow)
-  tensorflow::set_random_seed(set)
-  
-  train_images_colored <- colorize(train_images, train_labels) #, this_fac)
-  test_images_colored <- colorize(test_images, test_labels, test = TRUE) #, this_fac)
-  
-  # 3. Creating a binary outcome (0 vs all)
-  
-  train_labels_binary <- as.integer(train_labels == 0)
-  test_labels_binary <- as.integer(test_labels == 0)
-  
-  # 4. Constructing a CNN model including orthogonalization
+create_network <- function(with_orthog = TRUE){
   
   oz <- reticulate::import_from_path("orthog")
+  ozlayer <- oz$Orthogonalization()
   
   inp <- layer_input(shape = c(28, 28, 3))
   first_layer <- inp %>% 
-    layer_conv_2d(filters = 16, kernel_size = c(3,3), activation = 'relu')
-  redinfo <- layer_input(shape = c(2))
-  orth_first_layer <- oz$orthog_tf(first_layer, redinfo)
+    layer_conv_2d(filters = 8, kernel_size = c(3,3), activation = 'relu') 
+  if(with_orthog){
+    redinfo <- layer_input(shape = c(2))
+    orth_first_layer <- ozlayer(first_layer, redinfo)
+  }else{
+    orth_first_layer <- first_layer
+  }
   outp <- orth_first_layer %>%
     layer_conv_2d(filters = 16, kernel_size = c(3,3), activation = 'relu') %>%
     layer_max_pooling_2d(pool_size = c(2, 2)) %>%
@@ -81,7 +93,11 @@ res <- mclapply(1:reps, function(set){
     layer_dense(units = 64, activation = 'relu') %>%
     layer_dense(units = 1, activation = 'sigmoid') # Binary classification
   
-  model <- keras_model(list(inp, redinfo), outp)
+  if(with_orthog){
+    model <- keras_model(list(inp, redinfo), outp)
+  }else{
+    model <- keras_model(inp, outp)
+  }
   
   model %>% compile(
     optimizer = 'adam',
@@ -89,25 +105,27 @@ res <- mclapply(1:reps, function(set){
     metrics = c('accuracy')
   )
   
-  model_wo_correction <- keras_model_sequential() %>% 
-    layer_conv_2d(filters = 16, kernel_size = c(3,3), activation = 'relu',
-                  input_shape = c(28, 28, 3)) %>% 
-    layer_conv_2d(filters = 16, kernel_size = c(3,3), activation = 'relu') %>%
-    layer_max_pooling_2d(pool_size = c(2, 2)) %>%
-    layer_flatten() %>%
-    layer_dense(units = 64, activation = 'relu') %>%
-    layer_dense(units = 1, activation = 'sigmoid') # Binary classification
+  return(model)
   
-  model_wo_correction %>% compile(
-    optimizer = 'adam',
-    loss = 'binary_crossentropy',
-    metrics = c('accuracy')
-  )
+}
+
+res <- mclapply(1:reps, function(set){
+  
+  library(keras)
+  library(tensorflow)
+  tensorflow::set_random_seed(set)
+  
+  # 4. Constructing a CNN model including orthogonalization
+  
+  model <- create_network(TRUE)
+  model_wo_correction <- create_network(FALSE)
   
   # 5. Training the model
   
+  X <- cbind(1,train_red)
+  
   hist <- model %>% fit(
-    list(train_images_colored, cbind(1,train_red)),
+    list(train_images_colored, X),
     train_labels_binary,
     epochs = max_epochs,
     batch_size = batch_size,
@@ -140,21 +158,30 @@ res <- mclapply(1:reps, function(set){
   pred2 <- model_wo_correction %>% predict(test_images_colored)
   testperf2 <- Metrics::accuracy(round(pred2[,1]), test_labels_binary)
   
+  c(testperf, testperf2)
+  
   # 6. Check significances
   
-  conv_output <- keras_model(model$inputs[[1]], model$layers[[5]]$output)
-  yhat <- conv_output$predict(test_images_colored)
+  conv_layer_nr <- which(grepl("conv2d", sapply(model$layers, "[[", "name")))[1]
+  conv_output <- keras_model(model$inputs[[1]], model$layers[[conv_layer_nr]]$output)
+  conv_layer2_nr <- which(grepl("conv2d", sapply(model_wo_correction$layers, "[[", "name")))[1]
+  conv_output2 <- keras_model(model_wo_correction$inputs[[1]], model_wo_correction$layers[[conv_layer2_nr]]$output)
+
+  # evaluation with ReLU
   
-  conv_output2 <- keras_model(model_wo_correction$inputs[[1]], model_wo_correction$layers[[1]]$output)
-  yhat2 <- conv_output2$predict(test_images_colored)
+  yhat_train <- matrix(conv_output$predict(train_images_colored, batch_size = as.integer(batch_size)),
+                       nrow = length(train_red))
+  yhat_train_c <- yhat_train - cbind(1,train_red)%*%solve(crossprod(cbind(1,train_red)))%*%
+    crossprod(cbind(1,train_red), yhat_train)
+  yhat_train2 <- matrix(conv_output2$predict(train_images_colored, batch_size = as.integer(batch_size)),
+                        nrow = length(train_red))
   
-  coefMat <- tf$matmul(tf$matmul(cbind(1, test_red_actual), 
-                                 cbind(1, test_red_actual), transpose_a = TRUE),
-                       cbind(1, test_red_actual), transpose_b = TRUE)
+  beta_relu_c <- sapply(1:ncol(yhat_train_c), function(i)
+    solve_positive_constr_linreg(yhat_train_c[,i], cbind(1, train_red)))
+  beta_relu2 <- sapply(1:ncol(yhat_train2), function(i)
+    solve_positive_constr_linreg(yhat_train2[,i], cbind(1, train_red)))
   
-  beta <- as.array(tf$tensordot(coefMat, oz$orthog_tf(yhat, cbind(1,test_red_actual)), 
-                                axes = list(c(1L), c(0L))))[2,,,]
-  beta2 <- as.array(tf$tensordot(coefMat, yhat2, axes = list(c(1L), c(0L))))[2,,,]
+  # boxplot(cbind(beta_relu_c[2,], beta_relu2[2,]))
   
   # Return
   
@@ -168,12 +195,12 @@ res <- mclapply(1:reps, function(set){
                     type = rep(c("w/ correction", "w/o correction"), each = 3),
                     what = rep(c("train", "valid", "test"), 2),
                     rep = set),
-       coef = cbind(as.data.frame(rbind(summary(c(beta)),
-                                        summary(c(beta2)))),
+       coef = cbind(as.data.frame(rbind(summary(c(beta_relu_c)),
+                                        summary(c(beta_relu2)))),
                     type = c("w/ correction", "w/o correction"))
          )
   
-}, mc.cores = 4)
+}, mc.cores = 10)
 
 saveRDS(res, file = "result_MNIST.RDS")
 
@@ -197,8 +224,8 @@ my_palette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442",
   theme(
     legend.title = element_blank(),
     text = element_text(size = 13),
-    axis.text.x=element_text(colour="black")
-    # legend.position="bottom"
+    axis.text.x=element_text(colour="black"),
+    legend.position="bottom"
   ) + xlab("") + ylab("Accuracy"))
 
 ggsave("result_mnist.pdf", width = 5, height = 3)
@@ -222,12 +249,12 @@ ggsave("result_mnist.pdf", width = 5, height = 3)
     text = element_text(size = 13),
     axis.text.x=element_text(colour="black"),
     legend.position = "none"
-  ) + xlab("") + ylab("Influence of color\n on hidden layer"))
+  ) + xlab("") + ylab("Influence of Color"))
 
 ggsave("result_mnist_coef.pdf", width = 4, height = 3)
 
 library(gridExtra)
 
-p1 <- grid.arrange(g2, g1, widths = c(1, 3))
+p1 <- grid.arrange(g2, g1, widths = c(1, 1.5))
 
-ggsave(p1, file="result_mnist_both.pdf", width = 9, height = 2.5)
+ggsave(p1, file="result_mnist_both.pdf", width = 5.5, height = 2.5)

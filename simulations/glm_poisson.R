@@ -4,7 +4,9 @@ res <- sim_function(
   sample_fun = function(n, p) rpois(n, p),
   h = exp,
   g = log,
-  fam = poisson()
+  fam = poisson(),
+  nrcores = 1,
+  which_corr = "Lagrangian"
 )
 
 saveRDS(res, file="results/poisson.RDS")

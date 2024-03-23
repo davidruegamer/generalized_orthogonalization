@@ -1,4 +1,6 @@
 import tensorflow as tf
+from tensorflow.keras import layers
+from tensorflow.keras.layers import Layer
 
 def orthog_tf(Y, X):
     Q = tf.linalg.qr(X, full_matrices=False, name="QR").q
@@ -25,3 +27,26 @@ class Orthogonalization(tf.keras.layers.Layer):
             'deactivate_at_test': self.deactivate_at_test
         })
         return config
+        
+class CustomOrthog(layers.Layer):
+    def __init__(self):
+        super(CustomOrthog, self).__init__()
+        
+    def call(self, inputs):
+        yhat, train_red, ind = inputs
+        
+        yhat_shape = tf.shape(yhat)
+        total_elements = tf.cast(tf.reduce_prod(yhat_shape), tf.int32)
+        total_features = tf.cast(total_elements/yhat_shape[0], tf.int32)
+
+        yhat = tf.reshape(yhat, [-1, 1])
+        ind = tf.reshape(ind, [-1, 1])
+        
+        X_repeated = tf.tile(train_red, [total_features, 1]) 
+        X_repeated = X_repeated * ind
+        
+        yhatc = orthog_tf(yhat, X_repeated)
+        
+        yhatc = tf.reshape(yhatc, yhat_shape)
+
+        return yhatc

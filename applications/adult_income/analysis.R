@@ -39,20 +39,37 @@ X <- model.matrix(linear_proj_model)
 Z <- model.matrix(prediction_model)
 
 ### correct model
+yhat_score <- matrix(yhat_score)
+colnames(yhat_score) <- "yhats"
 yhatc_score <- orthog(to_orthog = yhat_score, orthog_with = X)
-Zc_prob <- correct_Z(X, Z, data$income, binomial, printevery = 1, 
-                     maxdiff = 1e-10)
-yhatc_prob <- glm(data$income ~ -1 + Zc_prob,
-                  family = binomial)
-
+# yhatc_prob <- correct_Z(X, Z, data$income, "binomial", "pred", 
+#                         conv_threshold = 5e-2, fac_improvem = 1000)
+yhatc_prob <- lagrangianConstr(X, Z, data$income, "binomial", "pred")
+  
 ### check again using evaluation model
 linear_proj_model <- lm(yhat ~ sex + race, 
-                        data = cbind(data, yhat = yhatc_score))
+                        data = cbind(data, yhat = c(yhatc_score)))
 summary(linear_proj_model)$coefficients[,c(1,4)] # betas close to zero
 anova(linear_proj_model) # no influence significant
 nonlinear_proj_model <- glm(yhat ~ sex + race, 
-                            data = cbind(data, yhat = predict(yhatc_prob, type="response")),
+                            data = cbind(data, yhat = yhatc_prob),
                             family = binomial)
 summary(nonlinear_proj_model)$coefficients[,c(1,4)] # no influence significant and betas close to zero
 
+Metrics::accuracy(yhatc_prob, data$income)
 
+### Xu et al 
+w_x <- yhat_prob
+w_1 <- predict(glm(income ~ sex + race,
+                   data = data),
+               type="response")
+prob0 <- (data$income==0)/nrow(data)
+prob1 <- (data$income==1)/nrow(data)
+
+yhatc_prob_xu <- w_x/w_1 * prob1 / (w_x/w_1 * prob1 + (1-w_x)/(1-w_1) * prob0)
+eval_model_xu <- glm(yhat ~ sex + race, 
+                            data = cbind(data, yhat = yhatc_prob_xu),
+                            family = binomial)
+summary(eval_model_xu)$coefficients[,c(1,4)] 
+
+Metrics::accuracy(yhatc_prob_xu, data$income)

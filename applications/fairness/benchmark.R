@@ -79,8 +79,9 @@ benchmark_fun <- function(
   if(dataset == "health.retirement")
     data <- na.omit(data)
   if(dataset == "adult"){ # fairml seem to not be able to handle more data
-    set.seed(323)
+    set.seed(32)
     data <- data[sample(1:nrow(data), pmin(nrow(data), 5000)),]
+    data <- droplevels(data)
   }
   info <- di[di$name == dataset,]
   family <- info$fams
@@ -131,23 +132,21 @@ benchmark_fun <- function(
   result_ortho <- wrapper_orthog(resp, 
                                  cbind(preds, sens), 
                                  sens, 
-                                 family = family,
-                                 maxdiff = 1e-7
-                                 )
+                                 family = family)
   ortho <- cbind(method = "ortho", dataset = dataset, 
-                 extract_info_model(result_ortho$eval_mod))
+                 extract_info_model(result_ortho))
   
-  return(c(stats_fair, list(ortho)))
+  return(do.call("rbind", c(stats_fair, list(ortho))))
   
 }
 
 # debug(benchmark_fun)
 
-res <- mclapply(data_info$names, function(name) benchmark_fun(name), mc.cores = 4)
+res <- mclapply(data_info$names, function(name) benchmark_fun(name), mc.cores = 1)
 
 saveRDS(res, file = "fairness_benchmark.RDS")
 
-res <- do.call("rbind", unlist(res, recursive = F))
+res <- do.call("rbind", res)
 
 library(ggplot2)
 library(dplyr)
@@ -155,17 +154,15 @@ library(dplyr)
 my_palette <- c("#E69F00", "#56B4E9", "#009E73", 
                 "#0072B2", "#D55E00", "#CC79A7")
 
-ggplot(res %>% filter(rowname != "(Intercept)") %>% 
-         mutate(
-           method = factor(method, levels = unique(method)[c(5,1:4)],
-                         labels = c("Komiyama1",
-                                    "Komiyama2",
-                                    "Berk",
-                                    "Zafar",
-                                    "Ours")),
-           name = factor(name, levels = unique(name),
-                         labels = c("effect", "p-value"))
-           )
+res$method <- factor(res$method, levels = unique(res$method),
+                     labels = c("Komiyama1", "Komiyama2", "Berk", "Zafar", "Ours"))
+res$name <- factor(res$name, levels = unique(res$name), labels = c("effect", "p-value"))
+
+ggplot(res %>% filter(rowname != "(Intercept)") 
+         # mutate(
+         #   method = factor(method, levels = unique(method), 
+         #                 labels = c("",
+         #                            "")),
            # name = factor(name, levels = c("coef", "pval"),
            #               labels = c("effect", "p-value")),
            # type = factor(type, levels = unique(type),
@@ -173,14 +170,14 @@ ggplot(res %>% filter(rowname != "(Intercept)") %>%
            # )
          #) %>% filter(abs(value) <= 10) %>% filter(load == ll),  
        , aes(x = dataset, y=value, colour = method)) +
-  geom_boxplot(position = position_dodge(preserve = "single")) +
+  geom_boxplot() +
   facet_wrap(~ name, scales="free") + 
   theme_bw() + 
   scale_colour_manual(values = my_palette) + 
   theme(
     legend.title = element_blank(),
-    text = element_text(size = 14),
+    text = element_text(size = 16),
     legend.position="bottom"
   )
 
-ggsave(file = "results_fairness_benchmark.pdf", height = 3, width = 10)
+ggsave(file = "results_fairness_benchmark.pdf", width = 14, height = 4)
