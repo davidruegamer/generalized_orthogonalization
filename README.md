@@ -1,5 +1,13 @@
 # Generalizing Orthogonalization for Models with Non-linearities: Supplementary Code 
 
+## Contents
+
+- `plot_optim.R`: generates demo_plot.pdf (Figure 1)
+- `simulations`: code to reproduce simulations
+- `applications`: code to reproduce applications
+
+## Preprint and Citation
+
 - Paper: https://arxiv.org/abs/2405.02475
 - Citation:
 
